@@ -67,6 +67,47 @@ def run_perp_target(
     )
 
 
+def run_perp_resting_limit(
+    client: Any,
+    plan: dict[str, Any],
+    runtime: dict[str, Any],
+    steps: list[dict[str, Any]],
+    *,
+    poll_interval_sec: float,
+    min_poll_interval_sec: float,
+    target_tolerance_steps: int,
+    progress: Progress | None,
+    add_step: Callable[[list[dict[str, Any]], dict[str, Any], Progress | None], None],
+    emit_before: Callable[[Progress | None, dict[str, Any]], None],
+) -> dict[str, Any]:
+    side = target_side(plan["action"])
+    state, target = build_target_state(client, plan, runtime, side, target_tolerance_steps)
+    add_step(steps, {"name": "position_before", "status": "ok", "side": side, **state, "positions": fetch_positions(client, plan["symbol"])}, progress)
+    if target_reached(plan["action"], float(state["current_quantity"]), target, float(state["tolerance_quantity"])):
+        add_step(steps, {"name": "position_verify", "status": "target_reached", "side": side, **state, "positions": fetch_positions(client, plan["symbol"])}, progress)
+        return report_execution(plan, steps, "target_reached", state)
+    amount = amount_to_precision(client, plan["symbol"], order_amount(plan, remaining_quantity(plan["action"], float(state["current_quantity"]), target)))
+    if amount <= 0:
+        return report_execution(plan, steps, "target_not_reached", state)
+    emit_before(progress, {"name": "submit", "status": "start", "attempt": 1, "attempt_total": 1, "amount": amount})
+    try:
+        order = submit_order(client, plan, amount, runtime["params"])
+    except Exception as exc:  # noqa: BLE001
+        add_step(steps, {"name": "submit", "status": "error", "attempt": 1, "error": submit_error(exc)}, progress)
+        return report_execution(plan, steps, "submit_error", state)
+    add_step(steps, {"name": "submit", "status": "ok", "attempt": 1, "amount": amount, "price": order.get("price"), "order_id": order.get("id")}, progress)
+    emit_before(progress, {"name": "resting_limit_verify", "status": "start", "order_id": order.get("id")})
+    status = monitor_order(client, order, plan["symbol"], max(0.25, min_poll_interval_sec), poll_interval_sec, min_poll_interval_sec)
+    add_step(steps, {"name": "resting_limit_verify", "status": status.get("status") or "unknown", "order_id": order.get("id")}, progress)
+    if status.get("status") == "closed":
+        positions = fetch_positions(client, plan["symbol"])
+        current = position_quantity(positions, plan["symbol"], side, bool(runtime.get("position_mode", {}).get("hedge")))
+        final_state = target_state(current, target, float(state["tolerance_quantity"]))
+        add_step(steps, {"name": "position_after_order", "status": "ok", "side": side, **final_state, "positions": positions}, progress)
+        return report_execution(plan, steps, "target_reached" if target_reached(plan["action"], current, target, float(state["tolerance_quantity"])) else "target_not_reached", final_state)
+    return report_execution(plan, steps, "resting_limit_submitted", {**state, "order_id": order.get("id"), "order_status": status.get("status") or "unknown"})
+
+
 def build_target_state(client: Any, plan: dict[str, Any], runtime: dict[str, Any], side: str, target_tolerance_steps: int) -> tuple[dict[str, Any], float]:
     step = float(plan.get("quantity_step") or 0)
     fallback_tolerance = step * max(0, target_tolerance_steps)

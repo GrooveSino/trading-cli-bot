@@ -2,7 +2,7 @@
 
 from .live import run_live_execution
 from .perp_orders import dry_run_fee
-from .spot import run_spot_target
+from .spot_execution import run_spot_target
 
 __all__ = [
     "dry_run_fee",

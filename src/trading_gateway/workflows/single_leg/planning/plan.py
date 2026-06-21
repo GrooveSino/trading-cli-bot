@@ -6,6 +6,7 @@ from typing import Any
 from trading_gateway.adapters.exchanges.single_leg import adapter_for
 from trading_gateway.app.config import get_gateway_config
 from trading_gateway.domain.models import format_decimal
+from trading_gateway.infrastructure.exchange.account_modes import normalize_account_mode
 from trading_gateway.domain.route_universe import validate_trading_symbol
 from trading_gateway.workflows.overview.planning_account_state import exchange_fetch_usage
 
@@ -33,8 +34,9 @@ def build_single_leg_trade_plan(
     base_qty = None if is_all_quantity(intent) else quantity_plan["base_quantity"]
     order_amount = None if base_qty is None else quantity_plan["order_amount"]
     params = adapter.order_params(intent.action, intent.bbo)
-    order_type = adapter.order_type(intent.bbo)
-    price = None if order_type == "market" else adapter.maker_price(client, trade_symbol, side_for_action(intent.action), params)
+    apply_intent_order_params(params, intent)
+    order_type = "limit" if intent.limit_price is not None else adapter.order_type(intent.bbo)
+    price = limit_order_price(client, trade_symbol, intent, adapter, order_type, params)
     warnings = build_warnings(intent, resolution.canonical_symbol, quantity_plan, universe_path, last)
     if not adapter.supports_live():
         warnings.append({"code": "exchange_market_not_supported", "message": adapter.unsupported_reason()})
@@ -59,6 +61,7 @@ def build_single_leg_trade_plan(
     usage = planning_usage or exchange_fetch_usage("cache_not_configured").to_mapping()
     return {
         "exchange": adapter.exchange,
+        "account_mode": normalize_account_mode(intent.account_mode, exchange=adapter.exchange),
         "market": intent.market,
         "bbo": intent.bbo,
         "action": intent.action,
@@ -68,8 +71,13 @@ def build_single_leg_trade_plan(
         "base_asset": adapter.base_asset(resolution, market),
         "quote_asset": adapter.quote_asset(resolution, market),
         "target_asset": adapter.base_asset(resolution, market) if intent.market == "spot" else None,
-        "target_leverage": config.perp_target_leverage if intent.market == "perp" else None,
+        "target_leverage": (intent.leverage or config.perp_target_leverage) if intent.market == "perp" else None,
+        "requested_leverage": intent.leverage,
         "requested_quote_usdt": intent.quote_usdt,
+        "limit_price": intent.limit_price,
+        "take_profit": intent.take_profit,
+        "stop_loss": intent.stop_loss,
+        "margin_mode": intent.margin_mode,
         "last_price": last,
         "quantity": "ALL" if base_qty is None else format_decimal(base_qty),
         "quantity_step": format_decimal(quantity_plan["base_step"]),
@@ -102,6 +110,44 @@ def canonical_symbol(exchange: str, market: str, symbol: str) -> str:
 
 def ccxt_symbol(exchange: str, market: str, symbol: str) -> str:
     return adapter_for(exchange, market).normalize_symbol(symbol).ccxt_symbol
+
+
+def apply_intent_order_params(params: dict[str, Any], intent: SingleLegIntent) -> None:
+    if intent.limit_price is not None:
+        params.pop("priceMatch", None)
+        if intent.exchange == "okx" and intent.market == "perp":
+            params["ordType"] = "limit"
+    if intent.margin_mode is not None:
+        params["tdMode"] = intent.margin_mode
+    if intent.take_profit is not None:
+        params["takeProfit"] = {
+            "triggerPrice": float(intent.take_profit),
+            "type": "market",
+            "triggerPriceType": "last",
+        }
+    if intent.stop_loss is not None:
+        params["stopLoss"] = {
+            "triggerPrice": float(intent.stop_loss),
+            "type": "market",
+            "triggerPriceType": "mark",
+        }
+
+
+def limit_order_price(
+    client: Any,
+    trade_symbol: str,
+    intent: SingleLegIntent,
+    adapter: Any,
+    order_type: str,
+    params: dict[str, Any],
+) -> float | None:
+    if intent.limit_price is not None:
+        method = getattr(client, "price_to_precision", None)
+        price = float(intent.limit_price)
+        return float(method(trade_symbol, price)) if callable(method) else price
+    if order_type == "market":
+        return None
+    return adapter.maker_price(client, trade_symbol, side_for_action(intent.action), params)
 
 
 def build_warnings(
@@ -147,11 +193,25 @@ def is_all_quantity(intent: SingleLegIntent) -> bool:
 
 def build_confirm_phrase(exchange: str, intent: SingleLegIntent, resolution: Any, quantity: float | None) -> str:
     action = intent.action.replace("-", "_").upper()
+    mode = normalize_account_mode(intent.account_mode, exchange=intent.exchange).upper()
+    exchange_label = exchange if mode == "LIVE" else f"{exchange}_{mode}"
     if intent.quote_usdt is not None:
         qty = f"QUOTE_{format_decimal(float(intent.quote_usdt))}"
     else:
         qty = "ALL" if quantity is None else format_decimal(quantity)
-    return f"LIVE_{exchange}_{intent.market.upper()}_{action}:{resolution.canonical_symbol.replace('/', '')}:{qty}"
+    risk_parts: list[str] = []
+    if intent.limit_price is not None:
+        risk_parts.append(f"LP_{format_decimal(float(intent.limit_price))}")
+    if intent.take_profit is not None:
+        risk_parts.append(f"TP_{format_decimal(float(intent.take_profit))}")
+    if intent.stop_loss is not None:
+        risk_parts.append(f"SL_{format_decimal(float(intent.stop_loss))}")
+    if intent.margin_mode is not None:
+        risk_parts.append(f"MM_{intent.margin_mode.upper()}")
+    if intent.leverage is not None:
+        risk_parts.append(f"LEV_{int(intent.leverage)}")
+    suffix = "" if not risk_parts else ":" + ":".join(risk_parts)
+    return f"LIVE_{exchange_label}_{intent.market.upper()}_{action}:{resolution.canonical_symbol.replace('/', '')}:{qty}{suffix}"
 
 
 def positive_float(value: Any, label: str) -> float:

@@ -19,7 +19,8 @@ from trading_gateway.workflows.single_leg.recovery.runtime import (
 
 def submit_order(client: Any, plan: dict[str, Any], amount: float | None, base_params: dict[str, Any]) -> dict[str, Any]:
     order = plan["order"]
-    params = dict(base_params)
+    params = dict(order.get("params") or {})
+    params.update(base_params)
     params.setdefault("newClientOrderId", f"aslab_{uuid.uuid4().hex[:24]}")
     price = runtime_price(client, plan)
     return client.create_order(order["symbol"], order["type"], order["side"], amount, price, params)
@@ -83,6 +84,8 @@ def runtime_price(client: Any, plan: dict[str, Any]) -> float | None:
     params = order.get("params") or {}
     if order.get("type") == "market" or params.get("priceMatch"):
         return None
+    if order.get("price") is not None:
+        return float(order["price"])
     book = client.fetch_order_book(order["symbol"])
     rows = book.get("bids") if order.get("side") == "buy" else book.get("asks")
     if not rows:

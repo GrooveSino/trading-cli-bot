@@ -47,35 +47,129 @@ def maybe_spot_target_rescue(
         blocked_state = {**state, **rescue_target_fields(guard)}
         add_step(steps, {"name": "spot_rescue_verify", "status": "asset_target_not_reached", **blocked_state, "balance": balance}, progress)
         return "asset_target_not_reached", blocked_state
+    return _submit_and_verify_rescue(
+        client,
+        plan,
+        steps,
+        guard,
+        balance,
+        target,
+        tolerance,
+        timeout_sec,
+        poll_interval_sec,
+        min_poll_interval_sec,
+        progress,
+        add_step,
+        emit_before,
+        monitor_order,
+        fetch_asset_balance,
+        order_amount,
+        target_state,
+        target_reached,
+    )
+
+
+def _submit_and_verify_rescue(
+    client: Any,
+    plan: dict[str, Any],
+    steps: list[dict[str, Any]],
+    guard: dict[str, Any],
+    balance: dict[str, float],
+    target: float,
+    tolerance: float,
+    timeout_sec: float,
+    poll_interval_sec: float,
+    min_poll_interval_sec: float,
+    progress: Progress | None,
+    add_step: Callable[[list[dict[str, Any]], dict[str, Any], Progress | None], None],
+    emit_before: Callable[[Progress | None, dict[str, Any]], None],
+    monitor_order: Callable[[Any, dict[str, Any], str, float, float, float], dict[str, Any]],
+    fetch_asset_balance: Callable[[Any, dict[str, Any]], dict[str, Any]],
+    order_amount: Callable[[Any, dict[str, Any], dict[str, float], float], float],
+    target_state: Callable[[dict[str, Any], dict[str, float], float, float], dict[str, Any]],
+    target_reached: Callable[[str, dict[str, Any]], bool],
+) -> tuple[str, dict[str, Any]]:
+    state = target_state(plan, balance, target, tolerance)
     rescue = adapter_for(plan["exchange"], plan["market"]).spot_rescue_order()
     if rescue is None:
         blocked_state = {**state, "rescue_reason": "spot rescue not supported for this exchange"}
         add_step(steps, {"name": "spot_rescue_submit", "status": "blocked", "error": blocked_state["rescue_reason"], **blocked_state}, progress)
         add_step(steps, {"name": "spot_rescue_verify", "status": "asset_target_not_reached", **blocked_state, "balance": balance}, progress)
         return "asset_target_not_reached", blocked_state
-    order_type, order_params = rescue
-    try:
-        amount = order_amount(client, plan, balance, target)
-    except Exception as exc:  # noqa: BLE001
-        blocked_state = {**state, **rescue_target_fields(guard), "rescue_reason": order_amount_reason(exc)}
-        add_step(steps, {"name": "spot_rescue_submit", "status": "blocked", "error": blocked_state["rescue_reason"], **blocked_state}, progress)
-        add_step(steps, {"name": "spot_rescue_verify", "status": "asset_target_not_reached", **blocked_state, "balance": balance}, progress)
-        return "asset_target_not_reached", blocked_state
-    min_qty = float(plan.get("min_executable_quantity") or 0)
-    if amount <= 0 or amount < min_qty:
-        blocked_state = {**state, **rescue_target_fields(guard), "rescue_reason": "remaining free quantity rounded below minimum executable quantity"}
-        add_step(steps, {"name": "spot_rescue_submit", "status": "blocked", "amount": amount, "error": blocked_state["rescue_reason"], **blocked_state}, progress)
-        add_step(steps, {"name": "spot_rescue_verify", "status": "asset_target_not_reached", **blocked_state, "balance": balance}, progress)
-        return "asset_target_not_reached", blocked_state
+    amount, blocked = _rescue_amount(client, plan, balance, target, guard, state, order_amount)
+    if blocked is not None:
+        add_step(steps, {"name": "spot_rescue_submit", "status": "blocked", "amount": amount, "error": blocked["rescue_reason"], **blocked}, progress)
+        add_step(steps, {"name": "spot_rescue_verify", "status": "asset_target_not_reached", **blocked, "balance": balance}, progress)
+        return "asset_target_not_reached", blocked
     price = float(guard["counterparty_price"])
     emit_before(progress, {"name": "spot_rescue_submit", "status": "start", "amount": amount, "price": price})
     try:
-        order = submit_rescue_spot_order(client, plan, amount, price, order_type, order_params)
+        order = submit_rescue_spot_order(client, plan, amount, price, rescue[0], rescue[1])
     except Exception as exc:  # noqa: BLE001
         error_state = {**state, **rescue_target_fields(guard), "rescue_reason": redact_text(exc)}
         add_step(steps, {"name": "spot_rescue_submit", "status": "error", "amount": amount, "price": price, "error": redact_text(exc), **error_state}, progress)
         return "submit_error", error_state
-    add_step(steps, {"name": "spot_rescue_submit", "status": "ok", "amount": amount, "price": order.get("price"), "order_id": order.get("id"), **state}, progress)
+    return _verify_rescue_order(
+        client,
+        plan,
+        steps,
+        order,
+        amount,
+        guard,
+        target,
+        tolerance,
+        timeout_sec,
+        poll_interval_sec,
+        min_poll_interval_sec,
+        progress,
+        add_step,
+        emit_before,
+        monitor_order,
+        fetch_asset_balance,
+        target_state,
+        target_reached,
+    )
+
+
+def _rescue_amount(
+    client: Any,
+    plan: dict[str, Any],
+    balance: dict[str, float],
+    target: float,
+    guard: dict[str, Any],
+    state: dict[str, Any],
+    order_amount: Callable[[Any, dict[str, Any], dict[str, float], float], float],
+) -> tuple[float, dict[str, Any] | None]:
+    try:
+        amount = order_amount(client, plan, balance, target)
+    except Exception as exc:  # noqa: BLE001
+        return 0.0, {**state, **rescue_target_fields(guard), "rescue_reason": order_amount_reason(exc)}
+    if amount <= 0 or amount < float(plan.get("min_executable_quantity") or 0):
+        return amount, {**state, **rescue_target_fields(guard), "rescue_reason": "remaining free quantity rounded below minimum executable quantity"}
+    return amount, None
+
+
+def _verify_rescue_order(
+    client: Any,
+    plan: dict[str, Any],
+    steps: list[dict[str, Any]],
+    order: dict[str, Any],
+    amount: float,
+    guard: dict[str, Any],
+    target: float,
+    tolerance: float,
+    timeout_sec: float,
+    poll_interval_sec: float,
+    min_poll_interval_sec: float,
+    progress: Progress | None,
+    add_step: Callable[[list[dict[str, Any]], dict[str, Any], Progress | None], None],
+    emit_before: Callable[[Progress | None, dict[str, Any]], None],
+    monitor_order: Callable[[Any, dict[str, Any], str, float, float, float], dict[str, Any]],
+    fetch_asset_balance: Callable[[Any, dict[str, Any]], dict[str, Any]],
+    target_state: Callable[[dict[str, Any], dict[str, float], float, float], dict[str, Any]],
+    target_reached: Callable[[str, dict[str, Any]], bool],
+) -> tuple[str, dict[str, Any]]:
+    add_step(steps, {"name": "spot_rescue_submit", "status": "ok", "amount": amount, "price": order.get("price"), "order_id": order.get("id")}, progress)
     emit_before(progress, {"name": "spot_rescue_monitor", "status": "start", "order_id": order.get("id")})
     status = monitor_order(client, order, plan["symbol"], timeout_sec, poll_interval_sec, min_poll_interval_sec)
     fee = order_fee_summary(plan, order, status, market="spot", amount=amount, price=order.get("price"), liquidity="taker")
@@ -110,6 +204,11 @@ def spot_rescue_guard(
         price = counterparty_price(client, plan["symbol"], price_side)
     except Exception as exc:  # noqa: BLE001
         return {"status": "blocked", "reason": f"counterparty price unavailable: {redact_text(exc)}", **state}
+    return _price_guard(plan, remaining_quantity, price, state)
+
+
+def _price_guard(plan: dict[str, Any], remaining_quantity: float, price: float, state: dict[str, Any]) -> dict[str, Any]:
+    config = get_gateway_config().spot_execution
     remaining_quote = remaining_quantity * price
     price_fields = rescue_price_fields(plan["action"], price)
     if remaining_quote > config.sell_all_rescue_max_quote_usdt:
@@ -137,10 +236,7 @@ def is_spot_rescue_eligible(plan: dict[str, Any]) -> bool:
 
 
 def rescue_target_fields(row: dict[str, Any]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key in ("counterparty_price", "best_bid", "best_ask", "remaining_quote_usdt", "slippage_bps"):
-        if key in row:
-            result[key] = row[key]
+    result = {key: row[key] for key in ("counterparty_price", "best_bid", "best_ask", "remaining_quote_usdt", "slippage_bps") if key in row}
     if row.get("reason"):
         result["rescue_reason"] = row["reason"]
     return result

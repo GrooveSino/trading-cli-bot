@@ -44,7 +44,7 @@ def print_plan_brief(plan: dict[str, Any], query_ms: int) -> None:
 def print_run_brief(payload: dict[str, Any]) -> None:
     plan = payload.get("plan") or {}
     status = str(payload.get("final_status") or "unknown")
-    style = "bold green" if status in {"target_reached", "asset_target_reached"} else "bold red"
+    style = "bold green" if status in {"target_reached", "asset_target_reached", "resting_limit_submitted"} else "bold red"
     exchange = str(plan.get("exchange") or "exchange").title()
     title = f"{exchange} Trading Run: {status.upper()}  query_ms={payload.get('query_ms')}  {plan.get('market')} {plan.get('action')} {plan.get('canonical_symbol') or plan.get('symbol')}"
     table = base_table()

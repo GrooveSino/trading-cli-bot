@@ -27,6 +27,12 @@ def order_text(plan: dict[str, Any]) -> str:
         bits.append(f"price={text(order.get('price'))}")
     if params.get("priceMatch"):
         bits.append(f"priceMatch={params['priceMatch']}")
+    if params.get("tdMode"):
+        bits.append(f"tdMode={params['tdMode']}")
+    if plan.get("take_profit") is not None:
+        bits.append(f"TP={text(plan.get('take_profit'))}")
+    if plan.get("stop_loss") is not None:
+        bits.append(f"SL={text(plan.get('stop_loss'))}")
     if params.get("reduceOnly"):
         bits.append("reduceOnly=true")
     return " ".join(bits)
@@ -96,6 +102,18 @@ def next_command(plan: dict[str, Any]) -> str:
         parts.append(str(plan.get("requested_quote_usdt")))
     if plan.get("bbo"):
         parts.append("--bbo")
+    if plan.get("limit_price") is not None:
+        parts.extend(["--limit-price", str(plan.get("limit_price"))])
+    if plan.get("take_profit") is not None:
+        parts.extend(["--take-profit", str(plan.get("take_profit"))])
+    if plan.get("stop_loss") is not None:
+        parts.extend(["--stop-loss", str(plan.get("stop_loss"))])
+    if plan.get("margin_mode") is not None:
+        parts.extend(["--margin-mode", str(plan.get("margin_mode"))])
+    if plan.get("requested_leverage") is not None:
+        parts.extend(["--leverage", str(plan.get("requested_leverage"))])
+    if plan.get("account_mode") == "sim":
+        parts.extend(["--account-mode", "sim"])
     parts.append(f'--confirm "{plan.get("confirm_phrase")}"')
     return " ".join(bit for bit in parts if bit)
 

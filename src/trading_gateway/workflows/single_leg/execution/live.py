@@ -11,8 +11,8 @@ from trading_gateway.workflows.single_leg.execution.perp_context import (
 )
 from trading_gateway.workflows.single_leg.execution.perp_orders import monitor_order, report_execution
 from trading_gateway.workflows.single_leg.execution.perp_close_all_runtime import run_perp_close_all
-from trading_gateway.workflows.single_leg.execution.perp_target import run_perp_target
-from trading_gateway.workflows.single_leg.execution.spot import run_spot_target
+from trading_gateway.workflows.single_leg.execution.perp_target import run_perp_resting_limit, run_perp_target
+from trading_gateway.workflows.single_leg.execution.spot_execution import run_spot_target
 
 Progress = Callable[[dict[str, Any]], None]
 
@@ -48,7 +48,7 @@ def run_live_execution(
     if runtime.get("position_mode"):
         add_step(steps, {"name": "position_mode", "status": "ok", **runtime["position_mode"]}, progress)
     if plan["market"] == "perp":
-        leverage = perp_leverage_step(client, plan, config.perp_execution.target_leverage)
+        leverage = perp_leverage_step(client, plan, int(plan.get("requested_leverage") or config.perp_execution.target_leverage))
         add_step(steps, {"name": "perp_leverage", **leverage}, progress)
         if leverage["status"] not in {"ok", "skipped"}:
             return report_execution(plan, steps, "blocked")
@@ -62,6 +62,19 @@ def run_live_execution(
                 order_timeout_sec=timeout,
                 poll_interval_sec=poll,
                 min_poll_interval_sec=min_poll,
+                progress=progress,
+                add_step=add_step,
+                emit_before=emit_before,
+            )
+        if is_resting_limit_plan(plan):
+            return run_perp_resting_limit(
+                client,
+                plan,
+                runtime,
+                steps,
+                poll_interval_sec=poll,
+                min_poll_interval_sec=min_poll,
+                target_tolerance_steps=tolerance_steps,
                 progress=progress,
                 add_step=add_step,
                 emit_before=emit_before,
@@ -120,6 +133,10 @@ def execution_defaults(config: Any, market: str) -> dict[str, float | int]:
         "min_poll": config.perp_min_poll_interval_sec,
         "tolerance_steps": config.perp_target_tolerance_steps,
     }
+
+
+def is_resting_limit_plan(plan: dict[str, Any]) -> bool:
+    return plan.get("market") == "perp" and plan.get("limit_price") is not None
 
 
 def add_step(steps: list[dict[str, Any]], row: dict[str, Any], progress: Progress | None) -> None:
