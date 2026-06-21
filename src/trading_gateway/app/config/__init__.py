@@ -5,9 +5,11 @@ from .access import (
     load_dotenv_file,
     load_gateway_config,
     read_exchange_creds,
+    read_exchange_creds_with_source,
     require_exchange_creds,
 )
 from .schema import (
+    BtcusdtMarketDataConfig,
     DaemonConfig,
     ExchangeEnvSpec,
     GatewayConfig,
@@ -22,6 +24,7 @@ from .schema import (
 __all__ = [
     "DEFAULT_CONFIG_FILE",
     "DEFAULT_ENV_FILE",
+    "BtcusdtMarketDataConfig",
     "DaemonConfig",
     "ExchangeEnvSpec",
     "GatewayConfig",
@@ -35,5 +38,6 @@ __all__ = [
     "load_dotenv_file",
     "load_gateway_config",
     "read_exchange_creds",
+    "read_exchange_creds_with_source",
     "require_exchange_creds",
 ]

@@ -7,18 +7,20 @@ import typer
 from trading_gateway.workflows.overview.snapshot.runtime.fetch import fetch_exchange_snapshot
 from trading_gateway.workflows.overview.snapshot.runtime.cli import print_account_snapshot
 from trading_gateway.interfaces.cli import help as cli_help
-from trading_gateway.interfaces.cli.validation import validate_exchange, validate_market
+from trading_gateway.interfaces.cli.validation import validate_market
 from trading_gateway.interfaces.daemon.client import DaemonClientError, daemon_http_post, ensure_daemon_ready_for_live
 from trading_gateway.infrastructure.exchange.factory import build_ccxt_client, close_client
 from trading_gateway.domain.models import TransferIntent, normalize_market, public_market_choices
 from trading_gateway.support.formatting import print_json
 from trading_gateway.support.redaction import redact_text
+from trading_gateway.application.wallet.policy import private_account_choices, private_account_mode_choices, validate_private_account_exchange, validate_private_account_exchanges
 from trading_gateway.application.wallet.wallet import fetch_wallet_snapshot, run_transfer
 from trading_gateway.application.wallet.summary_runner import print_wallet_summary
 
 JsonOpt = Annotated[bool, typer.Option("--json", help="print machine-readable JSON")]
-ExchangeOpt = Annotated[str, typer.Option(help="exchange: binance/okx/gate/mexc")]
+ExchangeOpt = Annotated[str, typer.Option(help=f"private account exchange: {private_account_choices()}")]
 MarketOpt = Annotated[str, typer.Option(help=f"market: {public_market_choices()}")]
+AccountModeOpt = Annotated[str | None, typer.Option("--account-mode", help=f"private account mode: {private_account_mode_choices()}; default is live; use sim for OKX demo")]
 
 
 def register_wallet_commands(wallet_app: typer.Typer) -> None:
@@ -44,35 +46,36 @@ def _wallet_root(
 
 
 def wallet_summary(
-    exchange: Annotated[list[str] | None, typer.Option("--exchange", help="repeat to limit exchanges")] = None,
+    exchange: Annotated[list[str] | None, typer.Option("--exchange", help="repeat to limit private exchanges; defaults to okx")] = None,
+    account_mode: AccountModeOpt = None,
     json_output: JsonOpt = False,
     progress: Annotated[bool, typer.Option("--progress/--no-progress", help="show colored progress bar")] = True,
     with_positions: Annotated[bool, typer.Option("--with-positions", help="also query perp positions count")] = False,
     cache_ttl_sec: Annotated[float, typer.Option("--cache-ttl-sec", help="reuse local summary cache within N seconds")] = 0,
 ) -> None:
-    for name in exchange or []:
-        validate_exchange(name)
-    print_wallet_summary(exchange, json_output=json_output, progress_enabled=progress, include_positions=with_positions, cache_ttl_sec=cache_ttl_sec)
+    exchanges = _validate_private_exchanges(exchange, account_mode)
+    print_wallet_summary(exchanges, json_output=json_output, progress_enabled=progress, include_positions=with_positions, cache_ttl_sec=cache_ttl_sec, account_mode=account_mode)
 
 
 def wallet_snapshot(
-    exchange: Annotated[list[str] | None, typer.Option("--exchange", help="repeat to limit exchanges")] = None,
+    exchange: Annotated[list[str] | None, typer.Option("--exchange", help="repeat to limit private exchanges; defaults to okx")] = None,
+    account_mode: AccountModeOpt = None,
     json_output: JsonOpt = False,
     nonzero_only: Annotated[bool, typer.Option("--nonzero-only/--all-assets", help="hide zero asset rows")] = True,
     active_positions_only: Annotated[bool, typer.Option("--active-positions-only/--all-positions", help="hide flat perp positions")] = True,
 ) -> None:
-    for name in exchange or []:
-        validate_exchange(name)
-    print_account_snapshot(exchange, json_output=json_output, nonzero_only=nonzero_only, active_positions_only=active_positions_only)
+    exchanges = _validate_private_exchanges(exchange, account_mode)
+    print_account_snapshot(exchanges, json_output=json_output, nonzero_only=nonzero_only, active_positions_only=active_positions_only, account_mode=account_mode)
 
 
 def wallet_balance(
     exchange: ExchangeOpt,
     market: Annotated[str, typer.Option(help=f"market: {public_market_choices(include_both=True)}")] = "both",
+    account_mode: AccountModeOpt = None,
     nonzero_only: Annotated[bool, typer.Option("--nonzero-only/--all-assets", help="hide zero asset rows")] = True,
     raw: Annotated[bool, typer.Option("--raw", help="show debug raw exchange/ccxt wallet payload")] = False,
 ) -> None:
-    validate_exchange(exchange)
+    exchange = _validate_private_exchange(exchange, account_mode)
     market_name = str(market or "").strip().lower()
     if market_name == "both":
         normalized_market = "both"
@@ -81,13 +84,14 @@ def wallet_balance(
     if normalized_market not in {"spot", "swap", "both"}:
         raise typer.BadParameter("market must be spot, perp, or both", param_hint="--market")
     if raw:
-        _print_raw_wallet_balance(exchange, normalized_market, nonzero_only)
+        _print_raw_wallet_balance(exchange, normalized_market, nonzero_only, account_mode)
         return
     snapshot = fetch_exchange_snapshot(
         exchange,
         nonzero_only=nonzero_only,
         include_empty_positions=False,
         markets=("spot", "perp") if normalized_market == "both" else ("perp",) if normalized_market == "swap" else ("spot",),
+        account_mode=account_mode,
     )
     if normalized_market == "both":
         print_json(snapshot)
@@ -98,9 +102,9 @@ def wallet_balance(
     print_json(_account_view(snapshot, "spot"))
 
 
-def wallet_positions(exchange: ExchangeOpt, symbol: Annotated[str | None, typer.Option()] = None) -> None:
-    validate_exchange(exchange)
-    snapshot = fetch_exchange_snapshot(exchange, nonzero_only=True, include_empty_positions=True, markets=("perp",))
+def wallet_positions(exchange: ExchangeOpt, symbol: Annotated[str | None, typer.Option()] = None, account_mode: AccountModeOpt = None) -> None:
+    exchange = _validate_private_exchange(exchange, account_mode)
+    snapshot = fetch_exchange_snapshot(exchange, nonzero_only=True, include_empty_positions=True, markets=("perp",), account_mode=account_mode)
     _raise_snapshot_account_error(snapshot, "perp")
     rows = (snapshot.get("perp") or {}).get("positions") or []
     if symbol:
@@ -108,11 +112,11 @@ def wallet_positions(exchange: ExchangeOpt, symbol: Annotated[str | None, typer.
     print_json({"positions": rows})
 
 
-def wallet_orders(exchange: ExchangeOpt, market: MarketOpt, symbol: Annotated[str, typer.Option()]) -> None:
-    validate_exchange(exchange)
+def wallet_orders(exchange: ExchangeOpt, market: MarketOpt, symbol: Annotated[str, typer.Option()], account_mode: AccountModeOpt = None) -> None:
+    exchange = _validate_private_exchange(exchange, account_mode)
     validate_market(market)
     try:
-        print_json({"open_orders": _wallet_snapshot(exchange, market, symbol).open_orders})
+        print_json({"open_orders": _wallet_snapshot(exchange, market, symbol, account_mode=account_mode).open_orders})
     except Exception as exc:  # noqa: BLE001 - CLI boundary returns concise redacted exchange errors.
         raise typer.BadParameter(redact_text(f"{type(exc).__name__}: {exc}")) from exc
 
@@ -126,6 +130,7 @@ def wallet_transfer(
     live: Annotated[bool, typer.Option()] = False,
     confirm: Annotated[str, typer.Option()] = "",
 ) -> None:
+    exchange = _validate_private_exchange(exchange)
     intent = TransferIntent(exchange, code, amount, from_account, to_account)
     if live:
         try:
@@ -154,26 +159,27 @@ def wallet_transfer(
         close_client(client)
 
 
-def _wallet_snapshot(exchange: str, market: str, symbol: str | None = None, *, nonzero_only: bool = True) -> Any:
-    client = build_ccxt_client(exchange, market, require_private=True)
+def _wallet_snapshot(exchange: str, market: str, symbol: str | None = None, *, nonzero_only: bool = True, account_mode: str | None = None) -> Any:
+    exchange = validate_private_account_exchange(exchange, account_mode)
+    client = build_ccxt_client(exchange, market, require_private=True, account_mode=account_mode)
     try:
         return fetch_wallet_snapshot(client, exchange, symbol, nonzero_only=nonzero_only)
     finally:
         close_client(client)
 
 
-def _print_raw_wallet_balance(exchange: str, market: str, nonzero_only: bool) -> None:
+def _print_raw_wallet_balance(exchange: str, market: str, nonzero_only: bool, account_mode: str | None) -> None:
     if market == "both":
         print_json(
             {
                 "exchange": exchange,
-                "spot": _wallet_snapshot(exchange, "spot", nonzero_only=nonzero_only).to_dict(),
-                "perp": _wallet_snapshot(exchange, "swap", nonzero_only=nonzero_only).to_dict(),
+                "spot": _wallet_snapshot(exchange, "spot", nonzero_only=nonzero_only, account_mode=account_mode).to_dict(),
+                "perp": _wallet_snapshot(exchange, "swap", nonzero_only=nonzero_only, account_mode=account_mode).to_dict(),
             }
         )
         return
     raw_market = "swap" if market == "swap" else market
-    print_json(_wallet_snapshot(exchange, raw_market, nonzero_only=nonzero_only).to_dict())
+    print_json(_wallet_snapshot(exchange, raw_market, nonzero_only=nonzero_only, account_mode=account_mode).to_dict())
 
 
 def _account_view(snapshot: dict[str, Any], market: str) -> dict[str, Any]:
@@ -222,7 +228,21 @@ def _print_wallet_hint(args: list[str]) -> None:
     if command in {"balance", "snapshot", "summary", "positions", "orders", "transfer"}:
         typer.echo(f"--{command} is not an option; use '{command}' as a command.", err=True)
         typer.echo("Examples:", err=True)
-        typer.echo("  tbot balance binance spot", err=True)
+        typer.echo("  tbot balance okx perp", err=True)
         typer.echo(f"  tbot wallet {command} --help", err=True)
         return
     typer.echo("Unknown wallet argument. Run: tbot wallet --help", err=True)
+
+
+def _validate_private_exchange(exchange: str, account_mode: str | None = None) -> str:
+    try:
+        return validate_private_account_exchange(exchange, account_mode)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="exchange") from exc
+
+
+def _validate_private_exchanges(exchanges: list[str] | None, account_mode: str | None = None) -> list[str]:
+    try:
+        return validate_private_account_exchanges(exchanges, account_mode)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--exchange") from exc

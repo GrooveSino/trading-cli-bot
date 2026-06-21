@@ -6,10 +6,23 @@ from typing import Any
 
 from trading_gateway.app.config import get_gateway_config
 
+MINIMAL_ROUTE_UNIVERSE = {
+    "schema_version": 4,
+    "generated_at": "embedded",
+    "allow_same_exchange": True,
+    "total_symbols": 2,
+    "symbols": [
+        {"symbol": "BTC/USDT", "spot": ["binance", "gate", "mexc", "okx"], "perp": ["binance", "gate", "mexc", "okx"]},
+        {"symbol": "ETH/USDT", "spot": ["binance", "gate", "mexc", "okx"], "perp": ["binance", "gate", "mexc", "okx"]},
+    ],
+}
+
 
 def load_route_universe(path: str | Path | None = None) -> dict[str, Any]:
     target = Path(path) if path is not None else get_gateway_config().route_universe
     if not target.exists():
+        if target.name == "symbol_route_universe.json":
+            return dict(MINIMAL_ROUTE_UNIVERSE)
         raise FileNotFoundError(f"route universe not found: {target}")
     payload = json.loads(target.read_text(encoding="utf-8"))
     if payload.get("schema_version") != 4:

@@ -34,6 +34,33 @@ class WebPollingConfig:
 
 
 @dataclass(frozen=True)
+class BtcusdtMarketDataConfig:
+    remote_host: str
+    remote_snapshot_path: str
+    remote_transport: str
+    remote_http_url: str
+    remote_http_proxy_url: str
+    remote_http_token_env: str
+    remote_ssh_fallback: bool
+    remote_http_timeout_sec: float
+    http_host: str
+    http_port: int
+    local_snapshot_cache: Path
+    sqlite_path: Path
+    snapshot_path: Path
+    poll_interval_sec: float
+    public_refresh_interval_sec: float
+    enrichment_refresh_interval_sec: float
+    account_refresh_interval_sec: float
+    prune_interval_sec: float
+    retention_liquidation_hours: float
+    retention_summary_hours: float
+    max_storage_bytes: int
+    liquidation_bucket_usd: float
+    max_remote_age_sec: float
+
+
+@dataclass(frozen=True)
 class PlanningConfig:
     account_state_source: str
     account_state_max_age_sec: float
@@ -101,6 +128,7 @@ class GatewayConfig:
     path: Path
     dotenv_path: Path
     daemon: DaemonConfig
+    btcusdt_marketdata: BtcusdtMarketDataConfig
     planning: PlanningConfig
     web_polling: WebPollingConfig
     credential_envs: dict[str, ExchangeEnvSpec]

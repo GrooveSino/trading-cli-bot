@@ -8,6 +8,14 @@ __pycache__/
 *.egg-info/
 src/*.egg-info/
 var/cache/
+var/log/
+var/marketdata/
+var/reports/
 var/run/
+var/tailscale/
 var/pair_journal/
+var/*.json
+var/*.refresh-failed
+!var/data/
+!var/data/**
 reports/

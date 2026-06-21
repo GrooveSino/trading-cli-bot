@@ -25,6 +25,46 @@ readiness_ttl_sec = 10.0
 startup_warmup_timeout_sec = 15.0
 runtime_dir = "var/run"
 
+[marketdata.btcusdt]
+# Legacy section name kept for compatibility. It now configures the Tokyo multi-snapshot appliance:
+# okx-live/btc, okx-live/eth, okx-sim/btc, okx-sim/eth.
+# Local CLI prefers local fresh cache, then Tailscale HTTP, then SSH fallback, then local live collection.
+remote_host = "tokyo-cloudserver"
+# Legacy OKX live BTC path used by older fallback readers.
+remote_snapshot_path = "~/services/trading-cli-bot/var/reports/btcusdt-market-snapshot.json"
+remote_transport = "http"
+# Base URL is derived from this value. New preferred endpoints are:
+#   /snapshot/okx-live/btc
+#   /snapshot/okx-live/eth
+#   /snapshot/okx-sim/btc
+#   /snapshot/okx-sim/eth
+# /snapshot/btcusdt remains a legacy alias for okx-live/btc.
+remote_http_url = "http://100.123.38.70:8787/snapshot/btcusdt"
+# Optional proxy for non-Tailscale HTTP URLs. Tailscale 100.x URLs bypass this automatically.
+remote_http_proxy_url = "http://127.0.0.1:1056"
+remote_http_token_env = "TBOT_MARKETDATA_TOKEN"
+remote_ssh_fallback = true
+remote_http_timeout_sec = 1.5
+# Bind all interfaces; clients still use the Tailscale URL above plus bearer auth.
+http_host = "0.0.0.0"
+http_port = 8787
+# Legacy cache/storage names. Multi-snapshot cache files use
+# var/reports/{okx-live,okx-sim}-{btc,eth}-market-snapshot.remote.json.
+local_snapshot_cache = "var/reports/btcusdt-market-snapshot.remote.json"
+sqlite_path = "var/marketdata/btcusdt.sqlite3"
+# Legacy OKX live BTC snapshot path. Multi-snapshot files are written beside it.
+snapshot_path = "var/reports/btcusdt-market-snapshot.json"
+poll_interval_sec = 10.0
+public_refresh_interval_sec = 120.0
+enrichment_refresh_interval_sec = 120.0
+account_refresh_interval_sec = 10.0
+prune_interval_sec = 300.0
+retention_liquidation_hours = 24.0
+retention_summary_hours = 48.0
+max_storage_bytes = 1073741824
+liquidation_bucket_usd = 500.0
+max_remote_age_sec = 30.0
+
 [web.polling]
 # Web 控制台轮询配置，单位毫秒。
 daemon_status_ms = 3000
@@ -37,7 +77,7 @@ query_stale_ms = 2000
 
 [quality.dir_fanout]
 # 单个目录允许的源码文件上限。
-default_code_files = 8
+default_code_files = 7
 generated_code_files = 10
 
 [quality.maxline]

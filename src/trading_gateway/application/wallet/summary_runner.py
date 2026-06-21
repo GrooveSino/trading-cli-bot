@@ -10,10 +10,11 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn, TimeElapsedColumn
 
 from trading_gateway.infrastructure.exchange.factory import build_ccxt_client, close_client
-from trading_gateway.domain.models import MARKET_TYPES, SUPPORTED_EXCHANGES
+from trading_gateway.domain.models import MARKET_TYPES
 from trading_gateway.app.config import get_gateway_config
 from trading_gateway.support.formatting import print_json
 from trading_gateway.support.redaction import redact_text
+from trading_gateway.application.wallet.policy import validate_private_account_exchanges
 from trading_gateway.application.wallet.summary_fast import fetch_fast_summary_market
 from trading_gateway.application.wallet.summary import build_summary_payload, format_summary_table, summarize_market
 
@@ -24,10 +25,11 @@ def print_wallet_summary(
     progress_enabled: bool = True,
     include_positions: bool = False,
     cache_ttl_sec: float = 0,
+    account_mode: str | None = None,
 ) -> None:
     started = perf_counter()
-    picked = exchanges or list(SUPPORTED_EXCHANGES)
-    cache_key = _cache_key(picked, include_positions)
+    picked = validate_private_account_exchanges(exchanges, account_mode)
+    cache_key = _cache_key(picked, include_positions, account_mode)
     cached = _read_cache(cache_key, cache_ttl_sec)
     if cached:
         print_json(cached) if json_output else print(format_summary_table(cached))
@@ -37,6 +39,7 @@ def print_wallet_summary(
         tasks,
         progress_enabled=progress_enabled and not json_output,
         include_positions=include_positions,
+        account_mode=account_mode,
     )
     payload = build_summary_payload(rows)
     payload["query_ms"] = int((perf_counter() - started) * 1000)
@@ -51,9 +54,10 @@ def _fetch_rows_parallel(
     *,
     progress_enabled: bool,
     include_positions: bool,
+    account_mode: str | None,
 ) -> list[dict[str, Any]]:
     exchanges = list(dict.fromkeys(exchange for exchange, _market in tasks))
-    work_items = _work_items(exchanges, include_positions)
+    work_items = _work_items(exchanges, include_positions, account_mode)
     workers = min(6, max(1, len(work_items)))
     rows: list[dict[str, Any]] = []
     console = Console(stderr=True)
@@ -70,16 +74,22 @@ def _fetch_rows_parallel(
     return rows
 
 
-def _work_items(exchanges: list[str], include_positions: bool) -> list[tuple[str, Any]]:
+def _work_items(exchanges: list[str], include_positions: bool, account_mode: str | None) -> list[tuple[str, Any]]:
     items = []
     for exchange in exchanges:
         if exchange in {"gate", "okx"} or include_positions:
-            items.append((exchange, lambda exchange=exchange: fetch_summary_exchange(exchange, include_positions)))
+            items.append((exchange, lambda exchange=exchange: _fetch_summary_exchange_for_mode(exchange, include_positions, account_mode)))
             continue
         for market in MARKET_TYPES:
             label = f"{exchange} {market}"
-            items.append((label, lambda exchange=exchange, market=market: [fetch_summary_market(exchange, market)]))
+            items.append((label, lambda exchange=exchange, market=market: [fetch_summary_market(exchange, market, account_mode=account_mode)]))
     return items
+
+
+def _fetch_summary_exchange_for_mode(exchange: str, include_positions: bool, account_mode: str | None) -> list[dict[str, Any]]:
+    if account_mode is None:
+        return fetch_summary_exchange(exchange, include_positions)
+    return fetch_summary_exchange(exchange, include_positions, account_mode=account_mode)
 
 
 def _progress(console: Console, enabled: bool) -> Progress:
@@ -95,9 +105,9 @@ def _progress(console: Console, enabled: bool) -> Progress:
     )
 
 
-def fetch_summary_exchange(exchange: str, include_positions: bool = False) -> list[dict[str, Any]]:
+def fetch_summary_exchange(exchange: str, include_positions: bool = False, account_mode: str | None = None) -> list[dict[str, Any]]:
     try:
-        client = build_ccxt_client(exchange, "spot", require_private=True, timeout_ms=get_gateway_config().wallet_summary_timeout_ms)
+        client = build_ccxt_client(exchange, "spot", require_private=True, account_mode=account_mode, timeout_ms=get_gateway_config().wallet_summary_timeout_ms)
     except Exception as exc:  # noqa: BLE001 - report missing credentials per market.
         return [_error_row(exchange, market, exc) for market in MARKET_TYPES]
     try:
@@ -106,9 +116,9 @@ def fetch_summary_exchange(exchange: str, include_positions: bool = False) -> li
         close_client(client)
 
 
-def fetch_summary_market(exchange: str, market: str, include_positions: bool = False) -> dict[str, Any]:
+def fetch_summary_market(exchange: str, market: str, include_positions: bool = False, account_mode: str | None = None) -> dict[str, Any]:
     try:
-        client = build_ccxt_client(exchange, market, require_private=True, timeout_ms=get_gateway_config().wallet_summary_timeout_ms)
+        client = build_ccxt_client(exchange, market, require_private=True, account_mode=account_mode, timeout_ms=get_gateway_config().wallet_summary_timeout_ms)
     except Exception as exc:  # noqa: BLE001 - keep other parallel rows alive.
         return _error_row(exchange, market, exc)
     try:
@@ -170,8 +180,8 @@ def _safe_fetch_positions(client: Any) -> list[dict[str, Any]]:
         return []
 
 
-def _cache_key(exchanges: list[str], include_positions: bool) -> str:
-    return json.dumps({"exchanges": exchanges, "include_positions": include_positions}, sort_keys=True)
+def _cache_key(exchanges: list[str], include_positions: bool, account_mode: str | None) -> str:
+    return json.dumps({"account_mode": account_mode, "exchanges": exchanges, "include_positions": include_positions}, sort_keys=True)
 
 
 def _read_cache(cache_key: str, ttl_sec: float) -> dict[str, Any] | None:

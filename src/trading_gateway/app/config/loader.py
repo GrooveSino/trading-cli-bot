@@ -4,7 +4,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from .schema import DaemonConfig, ExchangeEnvSpec, GatewayConfig, PairExecutionConfig, PlanningConfig, WebPollingConfig
+from .schema import BtcusdtMarketDataConfig, DaemonConfig, ExchangeEnvSpec, GatewayConfig, PairExecutionConfig, PlanningConfig, WebPollingConfig
 
 
 def load_config_file(path: Path) -> GatewayConfig:
@@ -31,6 +31,7 @@ def parse_gateway_config(path: Path, raw: dict[str, Any]) -> GatewayConfig:
     pair = _table(trading, "pair_execution")
     fees = _table(trading, "fees")
     paths = _table(raw, "paths")
+    marketdata = _table(_table(raw, "marketdata"), "btcusdt")
     return GatewayConfig(
         path=path,
         dotenv_path=Path(_table(raw, "env")["dotenv_path"]),
@@ -41,6 +42,31 @@ def parse_gateway_config(path: Path, raw: dict[str, Any]) -> GatewayConfig:
             readiness_ttl_sec=_float(daemon, "readiness_ttl_sec"),
             startup_warmup_timeout_sec=_float(daemon, "startup_warmup_timeout_sec"),
             runtime_dir=Path(daemon["runtime_dir"]),
+        ),
+        btcusdt_marketdata=BtcusdtMarketDataConfig(
+            remote_host=str(marketdata["remote_host"]),
+            remote_snapshot_path=str(marketdata["remote_snapshot_path"]),
+            remote_transport=str(marketdata.get("remote_transport", "ssh")),
+            remote_http_url=str(marketdata.get("remote_http_url", "")),
+            remote_http_proxy_url=str(marketdata.get("remote_http_proxy_url", "")),
+            remote_http_token_env=str(marketdata.get("remote_http_token_env", "TBOT_MARKETDATA_TOKEN")),
+            remote_ssh_fallback=bool(marketdata.get("remote_ssh_fallback", True)),
+            remote_http_timeout_sec=float(marketdata.get("remote_http_timeout_sec", 1.5)),
+            http_host=str(marketdata.get("http_host", "0.0.0.0")),
+            http_port=int(marketdata.get("http_port", 8787)),
+            local_snapshot_cache=Path(marketdata["local_snapshot_cache"]),
+            sqlite_path=Path(marketdata["sqlite_path"]),
+            snapshot_path=Path(marketdata["snapshot_path"]),
+            poll_interval_sec=_float(marketdata, "poll_interval_sec"),
+            public_refresh_interval_sec=_float(marketdata, "public_refresh_interval_sec"),
+            enrichment_refresh_interval_sec=_float(marketdata, "enrichment_refresh_interval_sec"),
+            account_refresh_interval_sec=_float(marketdata, "account_refresh_interval_sec"),
+            prune_interval_sec=_float(marketdata, "prune_interval_sec"),
+            retention_liquidation_hours=_float(marketdata, "retention_liquidation_hours"),
+            retention_summary_hours=_float(marketdata, "retention_summary_hours"),
+            max_storage_bytes=_int(marketdata, "max_storage_bytes"),
+            liquidation_bucket_usd=_float(marketdata, "liquidation_bucket_usd"),
+            max_remote_age_sec=_float(marketdata, "max_remote_age_sec"),
         ),
         planning=PlanningConfig(
             account_state_source=str(planning["account_state_source"]),

@@ -9,19 +9,18 @@ from datetime import UTC, datetime
 from typing import Any
 
 from trading_gateway.infrastructure.exchange.factory import build_ccxt_client, close_client
+from trading_gateway.infrastructure.exchange.account_modes import exchange_account_profile
+from trading_gateway.app.config import read_exchange_creds
 from trading_gateway.domain.models import display_market
 from trading_gateway.app.config import get_gateway_config
 from trading_gateway.interfaces.daemon.account_state import DaemonAccountStateStore
 from trading_gateway.support.redaction import redact_text
 
-ROUTES: tuple[tuple[str, str], ...] = (
-    ("binance", "spot"),
-    ("binance", "swap"),
-    ("okx", "spot"),
-    ("okx", "swap"),
-    ("gate", "spot"),
-    ("gate", "swap"),
-    ("mexc", "spot"),
+ROUTES: tuple[tuple[str, str, str], ...] = (
+    ("okx", "spot", "live"),
+    ("okx", "swap", "live"),
+    ("okx", "spot", "sim"),
+    ("okx", "swap", "sim"),
 )
 
 
@@ -29,6 +28,7 @@ ROUTES: tuple[tuple[str, str], ...] = (
 class RouteState:
     exchange: str
     market: str
+    account_mode: str
     client: Any | None = None
     status: str = "starting"
     refreshing: bool = False
@@ -41,13 +41,14 @@ class RouteState:
 
     @property
     def key(self) -> str:
-        return f"{self.exchange}:{self.market}"
+        return f"{self.exchange}:{self.market}:{self.account_mode}"
 
 
 class DaemonRuntime:
     def __init__(self) -> None:
         self._config = get_gateway_config()
-        self._routes = {f"{exchange}:{market}": RouteState(exchange, market) for exchange, market in ROUTES}
+        states = [RouteState(exchange, market, mode) for exchange, market, mode in ROUTES if _route_enabled(exchange, mode)]
+        self._routes = {state.key: state for state in states}
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -71,8 +72,8 @@ class DaemonRuntime:
                     close_client(route.client)
                     route.client = None
 
-    def route_client(self, exchange: str, market: str) -> Any:
-        key = _route_key(exchange, market)
+    def route_client(self, exchange: str, market: str, account_mode: str | None = None) -> Any:
+        key = _route_key(exchange, market, account_mode)
         with self._lock:
             route = self._routes[key]
         self._refresh_route(route, force=True)
@@ -81,11 +82,12 @@ class DaemonRuntime:
                 raise ValueError(f"daemon route not ready: {exchange} {display_market(market)}")
             return route.client
 
-    def ensure_routes_ready(self, routes: list[tuple[str, str]]) -> None:
+    def ensure_routes_ready(self, routes: list[tuple[str, str] | tuple[str, str, str | None]]) -> None:
         payload = self.status_payload()
-        status_by_key = {_route_key(str(row.get("exchange") or ""), str(row.get("market") or "")): row for row in payload["routes"]}
-        for exchange, market in routes:
-            key = _route_key(exchange, market)
+        status_by_key = {_route_key(str(row.get("exchange") or ""), str(row.get("market") or ""), row.get("account_mode")): row for row in payload["routes"]}
+        for route in routes:
+            exchange, market, mode = _route_parts(route)
+            key = _route_key(exchange, market, mode)
             row = status_by_key.get(key)
             if not row:
                 raise ValueError(f"daemon route unavailable: {exchange} {display_market(market)}")
@@ -120,8 +122,8 @@ class DaemonRuntime:
         with self._lock:
             self._active_job = value
 
-    def route_account_state(self, exchange: str, market: str) -> dict[str, Any]:
-        key = _route_key(exchange, market)
+    def route_account_state(self, exchange: str, market: str, account_mode: str | None = None) -> dict[str, Any]:
+        key = _route_key(exchange, market, account_mode)
         with self._lock:
             route = self._routes[key]
             if route.cached_balance is None:
@@ -134,8 +136,8 @@ class DaemonRuntime:
                 "refreshed_at": route.last_private_refresh_at,
             }
 
-    def refresh_route_account_state(self, exchange: str, market: str) -> None:
-        key = _route_key(exchange, market)
+    def refresh_route_account_state(self, exchange: str, market: str, account_mode: str | None = None) -> None:
+        key = _route_key(exchange, market, account_mode)
         with self._lock:
             route = self._routes[key]
         self._refresh_route(route, force=True)
@@ -173,7 +175,7 @@ class DaemonRuntime:
                 route.status = "warming"
         try:
             if client is None:
-                client = build_ccxt_client(exchange, market, require_private=True)
+                client = build_ccxt_client(exchange, market, require_private=True, account_mode=route.account_mode)
                 with self._lock:
                     if route.client is None:
                         route.client = client
@@ -213,9 +215,10 @@ class DaemonRuntime:
         ):
             effective_status = "stale"
         return {
-            "route": f"{route.exchange}:{display_market(route.market)}",
+            "route": f"{route.exchange}:{display_market(route.market)}:{route.account_mode}",
             "exchange": route.exchange,
             "market": display_market(route.market),
+            "account_mode": route.account_mode,
             "status": effective_status,
             "last_warmup_at": _iso(route.last_warmup_at),
             "last_private_refresh_at": _iso(route.last_private_refresh_at),
@@ -248,9 +251,25 @@ def reset_daemon_runtime_for_tests() -> None:
     stop_daemon_runtime()
 
 
-def _route_key(exchange: str, market: str) -> str:
+def _route_key(exchange: str, market: str, account_mode: object | None = None) -> str:
     normalized_market = "swap" if market == "perp" else market
-    return f"{exchange.lower()}:{normalized_market.lower()}"
+    normalized_exchange = exchange.lower()
+    mode = str(account_mode or "live").lower()
+    return f"{normalized_exchange}:{normalized_market.lower()}:{mode}"
+
+
+def _route_enabled(exchange: str, account_mode: str) -> bool:
+    profile = exchange_account_profile(exchange, account_mode)
+    if not profile.private_enabled:
+        return False
+    creds = read_exchange_creds(profile.exchange, profile.env_spec, profile.fallback_env_spec)
+    return bool(creds.api_key and creds.api_secret and (creds.password or not profile.env_spec.password_env))
+
+
+def _route_parts(route: tuple[str, str] | tuple[str, str, str | None]) -> tuple[str, str, str | None]:
+    if len(route) == 2:
+        return route[0], route[1], None
+    return route[0], route[1], route[2]
 
 
 def _iso(value: float | None) -> str | None:

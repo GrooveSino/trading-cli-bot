@@ -95,6 +95,7 @@ class OrderIntent:
     leverage: int = 1
     margin_mode: str = "cross"
     position_mode: str = "oneway"
+    account_mode: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "exchange", normalize_exchange(self.exchange))
@@ -128,6 +129,7 @@ class OrderPlan:
     params: dict[str, Any]
     order_method: str
     live_confirm_phrase: str
+    account_mode: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
