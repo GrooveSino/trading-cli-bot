@@ -8,6 +8,8 @@ import typer
 
 
 def echo_received() -> None:
+    if is_help_request():
+        return
     command = cli_command_label()
     transport = cli_transport()
     elapsed_ms = first_response_ms()
@@ -48,6 +50,11 @@ def cli_transport(argv: list[str] | None = None) -> str:
     return "local"
 
 
+def is_help_request(argv: list[str] | None = None) -> bool:
+    args = list(sys.argv[1:] if argv is None else argv)
+    return "-h" in args or "--help" in args
+
+
 def parsed_cli_tokens(argv: list[str] | None = None) -> tuple[list[str], list[str]]:
     args = list(sys.argv[1:] if argv is None else argv)
     index = 0
@@ -72,14 +79,13 @@ def parsed_cli_tokens(argv: list[str] | None = None) -> tuple[list[str], list[st
 def print_removed_command_hint(args: list[str]) -> bool:
     if not args:
         return False
-    if args[0] == "wallet":
-        typer.echo("wallet commands moved to top-level commands.", err=True)
-        typer.echo("Use one of: tbot summary | snapshot | balance | positions | orders | transfer", err=True)
-        typer.echo("Example: tbot balance binance spot", err=True)
-        return True
     if args[0] == "binance":
         typer.echo("binance subcommands were removed from the public CLI.", err=True)
         typer.echo("Use top-level reads instead: tbot summary | snapshot | positions | orders", err=True)
+        return True
+    if args[0] == "gate-sim":
+        typer.echo("gate-sim commands were removed from the public CLI.", err=True)
+        typer.echo("Use OKX demo instead: tbot sim btc | tbot sim btc test", err=True)
         return True
     return False
 

@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from trading_gateway.workflows.overview.snapshot.runtime.fetch import exchange_error, fetch_exchange_snapshot
 from trading_gateway.domain.models import SUPPORTED_EXCHANGES, ExchangeCreds
+from trading_gateway.application.wallet.policy import validate_private_account_exchanges
 from trading_gateway.application.wallet.summary import build_summary_payload
 
 Fetcher = Callable[[str], dict[str, Any]]
@@ -19,15 +20,17 @@ def build_account_snapshot(
     nonzero_only: bool = True,
     include_empty_positions: bool = False,
     fetcher: Fetcher | None = None,
+    account_mode: str | None = None,
 ) -> dict[str, Any]:
     started = perf_counter()
-    picked = exchanges or list(SUPPORTED_EXCHANGES)
+    picked = validate_private_account_exchanges(exchanges, account_mode)
     worker = fetcher or (
         lambda exchange: fetch_exchange_snapshot(
             exchange,
             credentials=credentials,
             nonzero_only=nonzero_only,
             include_empty_positions=include_empty_positions,
+            account_mode=account_mode,
         )
     )
     rows = _fetch_parallel(picked, worker)

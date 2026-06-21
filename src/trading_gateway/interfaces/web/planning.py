@@ -32,14 +32,15 @@ def single_leg_account_state(intent: Any, client: Any) -> dict[str, Any]:
     }
 
 
-def refresh_route_after_live(runtime: Any, routes: list[tuple[str, str]], result: dict[str, Any]) -> None:
+def refresh_route_after_live(runtime: Any, routes: list[tuple[str, str] | tuple[str, str, str | None]], result: dict[str, Any]) -> None:
     if not get_gateway_config().planning.refresh_routes_after_live_completion:
         return
     status = str(result.get("final_status") or result.get("status") or "")
     if status not in {"live", "target_reached", "asset_target_reached", "pair_target_reached"}:
         return
-    for exchange, market in routes:
-        runtime.refresh_route_account_state(exchange, market)
+    for route in routes:
+        exchange, market, mode = _route_parts(route)
+        runtime.refresh_route_account_state(exchange, market, mode)
 
 
 def uses_static_price_client(client: Any) -> bool:
@@ -68,8 +69,8 @@ def _pair_account_state_from_runtime(runtime: Any, spot_exchange: str, perp_exch
 def _single_leg_account_state_from_runtime(runtime: Any, intent: Any) -> dict[str, Any]:
     market = "perp" if intent.market == "perp" else "spot"
     state = resolve_planning_account_state(
-        cached_reader=lambda: runtime.route_account_state(intent.exchange, market),
-        fetcher=lambda: _fetch_client_account_state(runtime.route_client(intent.exchange, market), market),
+        cached_reader=lambda: runtime.route_account_state(intent.exchange, market, getattr(intent, "account_mode", None)),
+        fetcher=lambda: _fetch_client_account_state(runtime.route_client(intent.exchange, market, getattr(intent, "account_mode", None)), market),
     )
     return {"state": {"balance": state.balance, "positions": state.positions}, "usage": state.usage.to_mapping()}
 
@@ -107,3 +108,9 @@ def _safe_runtime() -> Any | None:
         return get_daemon_runtime()
     except Exception:  # noqa: BLE001
         return None
+
+
+def _route_parts(route: tuple[str, str] | tuple[str, str, str | None]) -> tuple[str, str, str | None]:
+    if len(route) == 2:
+        return route[0], route[1], None
+    return route[0], route[1], route[2]

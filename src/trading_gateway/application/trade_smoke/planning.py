@@ -9,15 +9,27 @@ from trading_gateway.domain.models import (
     format_decimal,
 )
 from trading_gateway.app.config import get_gateway_config
+from trading_gateway.infrastructure.exchange.account_modes import normalize_account_mode
 
 
 def order_confirm_phrase(intent: OrderIntent) -> str:
     if intent.quote_usdt is None:
         raise ValueError("live order confirmation requires quote_usdt")
+    mode = normalize_account_mode(intent.account_mode, exchange=intent.exchange).upper()
+    exchange = _confirm_exchange_label(intent.exchange, mode)
     return (
-        f"LIVE_ORDER:{intent.exchange}:{display_market(intent.market)}:"
+        f"LIVE_ORDER:{exchange}:{display_market(intent.market)}:"
         f"{intent.symbol}:{format_decimal(float(intent.quote_usdt))}"
     )
+
+
+def _confirm_exchange_label(exchange: str, mode: str) -> str:
+    name = exchange.lower()
+    if name == "okx" and mode == "LIVE":
+        return "OKX_LIVE"
+    if name == "okx" and mode == "SIM":
+        return "OKX_SIM"
+    return exchange if mode == "LIVE" else f"{exchange.upper()}_{mode}"
 
 
 def _last_price(client: Any, symbol: str, override: float | None = None) -> float:
@@ -116,6 +128,7 @@ def build_order_plan(
         params=params,
         order_method=order_method,
         live_confirm_phrase=order_confirm_phrase(intent),
+        account_mode=normalize_account_mode(intent.account_mode, exchange=intent.exchange),
     )
 
 

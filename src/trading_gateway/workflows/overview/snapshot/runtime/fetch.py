@@ -27,6 +27,7 @@ def fetch_exchange_snapshot(
     nonzero_only: bool = True,
     include_empty_positions: bool = False,
     markets: tuple[str, ...] | None = None,
+    account_mode: str | None = None,
 ) -> dict[str, Any]:
     started = perf_counter()
     picked_markets = set(markets or ("spot", "perp"))
@@ -37,9 +38,9 @@ def fetch_exchange_snapshot(
         "warnings": warnings,
     }
     if "spot" in picked_markets:
-        payload["spot"] = _fetch_spot(exchange, credentials, nonzero_only, warnings)
+        payload["spot"] = _fetch_spot(exchange, credentials, nonzero_only, warnings, account_mode)
     if "perp" in picked_markets:
-        payload["perp"] = _fetch_perp(exchange, credentials, include_empty_positions, warnings)
+        payload["perp"] = _fetch_perp(exchange, credentials, include_empty_positions, warnings, account_mode)
     payload["status"] = "partial_error" if warnings else "ok"
     payload["query_ms"] = int((perf_counter() - started) * 1000)
     return payload
@@ -57,11 +58,11 @@ def exchange_error(exchange: str, exc: Exception) -> dict[str, Any]:
     }
 
 
-def _fetch_spot(exchange: str, credentials: dict[str, ExchangeCreds] | None, nonzero_only: bool, warnings: list[str]) -> dict[str, Any]:
+def _fetch_spot(exchange: str, credentials: dict[str, ExchangeCreds] | None, nonzero_only: bool, warnings: list[str], account_mode: str | None) -> dict[str, Any]:
     client = None
     started = perf_counter()
     try:
-        client = _client(exchange, "spot", credentials)
+        client = _client(exchange, "spot", credentials, account_mode)
         if exchange == "binance":
             payload = parse_binance_spot(client.privateGetAccount({"omitZeroBalances": "true"}), nonzero_only=nonzero_only).to_dict()
             _enrich_asset_usdt_values(client, payload)
@@ -87,11 +88,11 @@ def _fetch_spot(exchange: str, credentials: dict[str, ExchangeCreds] | None, non
         close_client(client)
 
 
-def _fetch_perp(exchange: str, credentials: dict[str, ExchangeCreds] | None, include_empty_positions: bool, warnings: list[str]) -> dict[str, Any]:
+def _fetch_perp(exchange: str, credentials: dict[str, ExchangeCreds] | None, include_empty_positions: bool, warnings: list[str], account_mode: str | None) -> dict[str, Any]:
     client = None
     started = perf_counter()
     try:
-        client = _client(exchange, "swap", credentials)
+        client = _client(exchange, "swap", credentials, account_mode)
         if exchange == "binance":
             payload = parse_binance_swap(client.fapiPrivateV3GetAccount(), client.fapiPrivateV2GetPositionRisk(), include_empty_positions=include_empty_positions).to_dict()
             _enrich_stable_asset_usdt_values(payload)
@@ -118,14 +119,14 @@ def _fetch_perp(exchange: str, credentials: dict[str, ExchangeCreds] | None, inc
         close_client(client)
 
 
-def _client(exchange: str, market: str, credentials: dict[str, ExchangeCreds] | None) -> Any:
+def _client(exchange: str, market: str, credentials: dict[str, ExchangeCreds] | None, account_mode: str | None) -> Any:
     timeout_ms = get_gateway_config().account_snapshot_timeout_ms
     if credentials is None:
-        return build_ccxt_client(exchange, market, require_private=True, timeout_ms=timeout_ms)
+        return build_ccxt_client(exchange, market, require_private=True, account_mode=account_mode, timeout_ms=timeout_ms)
     creds = credentials.get(exchange)
     if not creds or not creds.api_key or not creds.api_secret:
         raise ValueError("missing credentials")
-    return build_ccxt_client_from_creds(exchange, market, creds, timeout_ms=timeout_ms)
+    return build_ccxt_client_from_creds(exchange, market, creds, account_mode=account_mode, timeout_ms=timeout_ms)
 
 
 def _failed_account(exchange: str, market: str, exc: Exception, warnings: list[str], factory: Any) -> dict[str, Any]:

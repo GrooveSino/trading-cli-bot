@@ -19,8 +19,27 @@ def build_single_leg_cli_plan(
     quote_usdt: float | None,
     bbo: bool,
     last_price: float | None,
+    limit_price: float | None = None,
+    take_profit: float | None = None,
+    stop_loss: float | None = None,
+    margin_mode: str | None = None,
+    leverage: int | None = None,
+    account_mode: str | None = None,
 ) -> dict[str, Any]:
-    intent = SingleLegIntent(exchange=exchange, market=market, action=action, symbol=symbol, quote_usdt=quote_usdt, bbo=bbo)
+    intent = SingleLegIntent(
+        exchange=exchange,
+        market=market,
+        action=action,
+        symbol=symbol,
+        quote_usdt=quote_usdt,
+        bbo=bbo,
+        limit_price=limit_price,
+        take_profit=take_profit,
+        stop_loss=stop_loss,
+        margin_mode=margin_mode,
+        leverage=leverage,
+        account_mode=account_mode,
+    )
     if last_price in (None, ""):
         daemon_plan = _daemon_plan_or_none(
             "/api/lab/plan",
@@ -31,11 +50,17 @@ def build_single_leg_cli_plan(
                 "symbol": symbol,
                 "quote_usdt": quote_usdt,
                 "bbo": bbo,
+                "limit_price": limit_price,
+                "take_profit": take_profit,
+                "stop_loss": stop_loss,
+                "margin_mode": margin_mode,
+                "leverage": leverage,
+                "account_mode": account_mode,
             },
         )
         if daemon_plan is not None:
             return daemon_plan["plan"]
-    client = lab_client(exchange, market, intent.symbol, last_price, private=last_price is None)
+    client = lab_client(exchange, market, intent.symbol, last_price, private=last_price is None, account_mode=account_mode)
     try:
         return build_single_leg_trade_plan(client, intent, universe_path=get_gateway_config().route_universe)
     finally:
@@ -119,10 +144,10 @@ def cli_pair_client(exchange: str, market: str, symbol: str, last_price: float |
     return lab_client(exchange, market, ccxt_symbol(exchange, market, symbol), last_price, private=private)
 
 
-def lab_client(exchange: str, market: str, symbol: str, last_price: float | None, *, private: bool) -> Any:
+def lab_client(exchange: str, market: str, symbol: str, last_price: float | None, *, private: bool, account_mode: str | None = None) -> Any:
     if last_price is not None:
         return StaticLabClient(exchange, symbol, market, last_price)
-    return build_ccxt_client(exchange, "swap" if market == "perp" else "spot", require_private=private)
+    return build_ccxt_client(exchange, "swap" if market == "perp" else "spot", require_private=private, account_mode=account_mode)
 
 
 def _daemon_plan_or_none(path: str, body: dict[str, Any]) -> dict[str, Any] | None:

@@ -16,6 +16,7 @@ from trading_gateway.app.config import get_gateway_config
 from trading_gateway.support.redaction import redact_mapping
 from trading_gateway.interfaces.web.runtime import transfer_intent
 from trading_gateway.workflows.pair_trade.recovery.status import build_pair_status
+from trading_gateway.application.wallet.policy import validate_private_account_exchange
 
 Progress = Callable[[dict[str, Any]], None]
 
@@ -28,8 +29,9 @@ def summary() -> dict[str, Any]:
     return snapshot_to_summary_payload(snapshot())
 
 
-def orders(exchange: str, market: str, symbol: str) -> dict[str, Any]:
-    client = build_ccxt_client(exchange, market, require_private=True)
+def orders(exchange: str, market: str, symbol: str, account_mode: str | None = None) -> dict[str, Any]:
+    exchange = validate_private_account_exchange(exchange, account_mode)
+    client = build_ccxt_client(exchange, market, require_private=True, account_mode=account_mode)
     try:
         return redact_mapping({"open_orders": client.fetch_open_orders(symbol) or []})
     finally:
@@ -180,7 +182,7 @@ def pair_status(pair_id: str) -> dict[str, Any]:
 
 def lab_plan(body: dict[str, Any]) -> dict[str, Any]:
     intent = _lab_intent(body)
-    client = build_ccxt_client(intent.exchange, "swap" if intent.market == "perp" else "spot", require_private=body.get("last_price") in (None, ""))
+    client = build_ccxt_client(intent.exchange, "swap" if intent.market == "perp" else "spot", require_private=body.get("last_price") in (None, ""), account_mode=intent.account_mode)
     try:
         account_state = single_leg_account_state(intent, client)
         return {
@@ -203,8 +205,8 @@ def lab_run(body: dict[str, Any], progress: Progress | None = None) -> dict[str,
     intent = _lab_intent(body)
     runtime = get_daemon_runtime()
     daemon_market = intent.market
-    runtime.ensure_routes_ready([(intent.exchange, daemon_market)])
-    client = runtime.route_client(intent.exchange, daemon_market)
+    runtime.ensure_routes_ready([(intent.exchange, daemon_market, intent.account_mode)])
+    client = runtime.route_client(intent.exchange, daemon_market, intent.account_mode)
     try:
         account_state = single_leg_account_state(intent, client)
         plan = build_single_leg_trade_plan(
@@ -215,7 +217,7 @@ def lab_run(body: dict[str, Any], progress: Progress | None = None) -> dict[str,
             planning_usage=account_state["usage"],
         )
         result = run_single_leg_execution(client, plan, confirm=str(body.get("confirm") or ""), timeout_sec=_optional_float(body.get("timeout_sec")), max_requotes=_optional_int(body.get("max_requotes")), progress=progress)
-        refresh_route_after_live(runtime, [(intent.exchange, daemon_market)], result)
+        refresh_route_after_live(runtime, [(intent.exchange, daemon_market, intent.account_mode)], result)
         return result
     finally:
         pass
@@ -228,7 +230,20 @@ def _pair_clients(body: dict[str, Any], *, private: bool) -> tuple[Any, Any]:
 
 
 def _lab_intent(body: dict[str, Any]) -> SingleLegIntent:
-    return SingleLegIntent(exchange=str(body.get("exchange") or "binance"), market=str(body.get("market") or ""), action=str(body.get("action") or ""), symbol=str(body.get("symbol") or ""), quote_usdt=body.get("quote_usdt"), bbo=bool(body.get("bbo", True)))
+    return SingleLegIntent(
+        exchange=str(body.get("exchange") or "binance"),
+        market=str(body.get("market") or ""),
+        action=str(body.get("action") or ""),
+        symbol=str(body.get("symbol") or ""),
+        quote_usdt=body.get("quote_usdt"),
+        bbo=bool(body.get("bbo", True)),
+        limit_price=_optional_float(body.get("limit_price")),
+        take_profit=_optional_float(body.get("take_profit")),
+        stop_loss=_optional_float(body.get("stop_loss")),
+        margin_mode=body.get("margin_mode"),
+        leverage=_optional_int(body.get("leverage")),
+        account_mode=body.get("account_mode"),
+    )
 
 
 def _optional_float(value: Any) -> float | None:

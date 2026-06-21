@@ -11,10 +11,12 @@ def print_account_snapshot(
     json_output: bool,
     nonzero_only: bool,
     active_positions_only: bool,
+    account_mode: str | None = None,
 ) -> None:
     payload = build_account_snapshot(
         exchanges,
         nonzero_only=nonzero_only,
         include_empty_positions=not active_positions_only,
+        account_mode=account_mode,
     )
     print_json(payload) if json_output else print_account_snapshot_rich(payload)
