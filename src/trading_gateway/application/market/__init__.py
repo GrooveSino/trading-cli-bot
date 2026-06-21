@@ -1,0 +1,2 @@
+"""Public market-data snapshots."""
+
